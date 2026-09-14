@@ -62,8 +62,14 @@ enum CompositionParser {
         clockSource: ClockSource,
         currentSeconds: Double,
         fps: Double = 25,
+        preferredLayerGroup: Int? = nil,
         from compositionPath: String? = nil
-    ) throws -> (compositionPath: String, compositionName: String, triggers: [ClipTrigger]) {
+    ) throws -> (
+        compositionPath: String,
+        compositionName: String,
+        triggers: [ClipTrigger],
+        layerGroups: [LayerGroupInfo]
+    ) {
         let path = try compositionPath ?? currentCompositionPath()
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
@@ -81,8 +87,9 @@ enum CompositionParser {
             ?? url.deletingPathExtension().lastPathComponent
 
         var triggers: [ClipTrigger] = []
-        let layerGroups = buildLayerGroupMap(from: root)
+        let layerGroupsMap = buildLayerGroupMap(from: root)
         let columnNames = buildColumnNameMaps(from: root)
+        let layerGroups = buildLayerGroupList(from: root, columnMaps: columnNames, layerMap: layerGroupsMap)
 
         for deck in root.elements(forName: "Deck") {
             for clip in deck.elements(forName: "Clip") {
@@ -108,10 +115,11 @@ enum CompositionParser {
                 let uniqueId = clip.attribute(forName: "uniqueId")?.stringValue
                     ?? "\(layer)-\(column)-\(nameParam.valueName)"
 
-                let group = layerGroups[layer]
+                let group = layerGroupsMap[layer]
                 let columnName = resolveColumnName(
                     column: column,
                     layerGroup: group,
+                    preferredGroup: preferredLayerGroup,
                     maps: columnNames
                 )
 
@@ -133,7 +141,7 @@ enum CompositionParser {
         }
 
         triggers.sort { $0.timeSeconds < $1.timeSeconds }
-        return (path, compositionName, triggers)
+        return (path, compositionName, triggers, layerGroups)
     }
 
     private struct ColumnNameMaps {
@@ -194,8 +202,14 @@ enum CompositionParser {
         return maps
     }
 
-    private static func resolveColumnName(column: Int, layerGroup: Int?, maps: ColumnNameMaps) -> String {
-        if let group = layerGroup {
+    private static func resolveColumnName(
+        column: Int,
+        layerGroup: Int?,
+        preferredGroup: Int?,
+        maps: ColumnNameMaps
+    ) -> String {
+        let group = preferredGroup ?? layerGroup
+        if let group {
             let key = groupKey(group, column)
             if let name = maps.groups[key], !name.isEmpty {
                 return name
@@ -205,6 +219,35 @@ enum CompositionParser {
             return name
         }
         return "Colonna \(column + 1)"
+    }
+
+    private static func buildLayerGroupList(
+        from root: XMLElement,
+        columnMaps: ColumnNameMaps,
+        layerMap: [Int: Int]
+    ) -> [LayerGroupInfo] {
+        var indices = Set(layerMap.values)
+        for key in columnMaps.groups.keys {
+            if let g = Int(key.split(separator: ":").first ?? "") {
+                indices.insert(g)
+            }
+        }
+        // Also count <Group> elements under composition as fallback indices
+        let groupElements = root.elements(forName: "Group")
+        if indices.isEmpty, !groupElements.isEmpty {
+            for i in 0..<groupElements.count { indices.insert(i) }
+        }
+        if indices.isEmpty {
+            // Still expose group 1 if composition has any group columns
+            if !columnMaps.groups.isEmpty { indices.insert(0) }
+        }
+
+        return indices.sorted().map { index in
+            let nameFromColumns: String? = nil
+            // Prefer a readable name; Resolume XML rarely stores group name on <Group>
+            _ = nameFromColumns
+            return LayerGroupInfo(index: index, name: "Layer Group \(index + 1)")
+        }
     }
 
     /// layerIndex (0-based) → layerGroup index (0-based)

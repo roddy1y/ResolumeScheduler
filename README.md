@@ -22,7 +22,7 @@ Helper app per Mac ispirata a [jorisdejong/Scheduler](https://github.com/jorisde
 |---|---|
 | **Clip** | `/composition/layers/L/clips/C/connect` |
 | **Colonna** | `/composition/columns/C/connect` |
-| **Colonna gruppo** | `/composition/layergroups/G/columns/C/connect` |
+| **Colonna gruppo** | `/composition/groups/G/columns/C/connect` |
 
 ## Requisiti
 

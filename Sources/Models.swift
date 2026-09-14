@@ -54,9 +54,17 @@ enum TriggerTarget: String, CaseIterable, Identifiable {
         case .column:
             return "Triggera la colonna generale della composition."
         case .groupColumn:
-            return "Triggera la colonna dentro il layer group della clip."
+            return "Triggera la colonna del layer group scelto (seleziona il gruppo)."
         }
     }
+}
+
+struct LayerGroupInfo: Identifiable, Equatable, Hashable {
+    /// 0-based index in Resolume (OSC uses +1).
+    let index: Int
+    let name: String
+    var id: Int { index }
+    var title: String { "\(index + 1). \(name)" }
 }
 
 struct AppSettings {
@@ -66,6 +74,8 @@ struct AppSettings {
     var audioInputUID: String
     /// 0-based channel index on the selected input device.
     var audioChannel: Int
+    /// 0-based layer group used for "Colonna gruppo".
+    var targetLayerGroup: Int
     var oscHost: String
     var oscPort: Int
 
@@ -75,6 +85,7 @@ struct AppSettings {
         frameRate: .fps25,
         audioInputUID: "",
         audioChannel: 0,
+        targetLayerGroup: 0,
         oscHost: "127.0.0.1",
         oscPort: 7000
     )
@@ -90,6 +101,7 @@ struct AppSettings {
         if let fr = FrameRate(rawValue: fps) { s.frameRate = fr }
         s.audioInputUID = d.string(forKey: "audioInputUID") ?? ""
         s.audioChannel = max(0, d.integer(forKey: "audioChannel"))
+        s.targetLayerGroup = max(0, d.integer(forKey: "targetLayerGroup"))
         s.oscHost = d.string(forKey: "oscHost") ?? "127.0.0.1"
         let port = d.integer(forKey: "oscPort")
         if (1...65535).contains(port) { s.oscPort = port }
@@ -103,6 +115,7 @@ struct AppSettings {
         d.set(frameRate.rawValue, forKey: "frameRate")
         d.set(audioInputUID, forKey: "audioInputUID")
         d.set(audioChannel, forKey: "audioChannel")
+        d.set(targetLayerGroup, forKey: "targetLayerGroup")
         d.set(oscHost, forKey: "oscHost")
         d.set(oscPort, forKey: "oscPort")
     }
@@ -124,15 +137,16 @@ struct ClipTrigger: Identifiable, Equatable {
 
     var timeLabel: String { scheduleLabel }
 
-    func oscAddress(target: TriggerTarget) -> String? {
+    func oscAddress(target: TriggerTarget, explicitLayerGroup: Int? = nil) -> String? {
         switch target {
         case .clip:
             return "/composition/layers/\(layer + 1)/clips/\(column + 1)/connect"
         case .column:
             return "/composition/columns/\(column + 1)/connect"
         case .groupColumn:
-            guard let group = layerGroup else { return nil }
-            return "/composition/layergroups/\(group + 1)/columns/\(column + 1)/connect"
+            let group = explicitLayerGroup ?? layerGroup
+            guard let group else { return nil }
+            return "/composition/groups/\(group + 1)/columns/\(column + 1)/connect"
         }
     }
 }

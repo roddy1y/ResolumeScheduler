@@ -5,13 +5,14 @@ import Combine
 final class SchedulerEngine: ObservableObject {
     @Published var settings: AppSettings {
         didSet {
-            guard bootstrapped else { return }
+            guard bootstrapped, !suppressSettingsSideEffects else { return }
             settings.save()
             applyTransportSettings()
             check()
         }
     }
 
+    @Published var layerGroups: [LayerGroupInfo] = []
     @Published var audioDevices: [AudioInputDevice] = []
     @Published var triggers: [ClipTrigger] = []
     @Published var statusMessage = "Premi Check per leggere la composition."
@@ -32,6 +33,16 @@ final class SchedulerEngine: ObservableObject {
     private var lastTimecodeSeconds: Double = -1
     private var latestLTC: ReceivedTimecode?
     private var bootstrapped = false
+    private var suppressSettingsSideEffects = false
+
+    private func updateSettingsQuietly(_ mutate: (inout AppSettings) -> Void) {
+        suppressSettingsSideEffects = true
+        var s = settings
+        mutate(&s)
+        settings = s
+        settings.save()
+        suppressSettingsSideEffects = false
+    }
 
     init() {
         settings = AppSettings.load()
@@ -102,14 +113,21 @@ final class SchedulerEngine: ObservableObject {
 
     func check() {
         let nowSeconds = currentClockSeconds() ?? TimeCodeFormat.secondsSinceMidnight()
+        let preferredGroup = settings.triggerTarget == .groupColumn ? settings.targetLayerGroup : nil
         do {
             let result = try CompositionParser.loadTriggers(
                 clockSource: settings.clockSource,
                 currentSeconds: nowSeconds,
-                fps: settings.frameRate.rawValue
+                fps: settings.frameRate.rawValue,
+                preferredLayerGroup: preferredGroup
             )
             compositionPath = result.compositionPath
             compositionName = result.compositionName
+            layerGroups = result.layerGroups
+            if !layerGroups.isEmpty,
+               !layerGroups.contains(where: { $0.index == settings.targetLayerGroup }) {
+                updateSettingsQuietly { $0.targetLayerGroup = layerGroups[0].index }
+            }
             let previousEnabled = Dictionary(uniqueKeysWithValues: triggers.map { ($0.id, $0.isEnabled) })
             let disabledSaved = Set(UserDefaults.standard.stringArray(forKey: "disabledTriggerIDs") ?? [])
             triggers = result.triggers.map { trigger in
@@ -139,6 +157,16 @@ final class SchedulerEngine: ObservableObject {
             lastError = error.localizedDescription
             statusMessage = "Errore nel caricamento."
             triggers = []
+        }
+
+        Task {
+            let live = await ResolumeREST.fetchLayerGroups()
+            if !live.isEmpty {
+                layerGroups = live
+                if !live.contains(where: { $0.index == settings.targetLayerGroup }) {
+                    updateSettingsQuietly { $0.targetLayerGroup = live[0].index }
+                }
+            }
         }
     }
 
@@ -205,14 +233,37 @@ final class SchedulerEngine: ObservableObject {
             guard !triggers[i].hasFired else { continue }
             guard seconds + 0.02 >= triggers[i].timeSeconds else { continue }
 
-            guard let address = triggers[i].oscAddress(target: settings.triggerTarget) else {
-                lastError = "L\(triggers[i].layer + 1)C\(triggers[i].column + 1) non è in un layer group"
-                triggers[i].hasFired = true // avoid spam
+            let explicitGroup = settings.triggerTarget == .groupColumn ? settings.targetLayerGroup : nil
+            guard let address = triggers[i].oscAddress(
+                target: settings.triggerTarget,
+                explicitLayerGroup: explicitGroup
+            ) else {
+                lastError = "Seleziona un layer group per triggerare la colonna"
+                triggers[i].hasFired = true
                 continue
             }
-            let ok = osc.sendInt(address, value: 1)
-            triggers[i].hasFired = ok
-            if ok {
+
+            let okOSC = osc.sendInt(address, value: 1)
+            triggers[i].hasFired = okOSC
+
+            // REST fallback for layer-group columns (più affidabile su Arena 7).
+            if settings.triggerTarget == .groupColumn {
+                let group = settings.targetLayerGroup + 1
+                let column = triggers[i].column + 1
+                Task {
+                    let okREST = await ResolumeREST.connectGroupColumn(
+                        groupOneBased: group,
+                        columnOneBased: column
+                    )
+                    if !okREST && !okOSC {
+                        await MainActor.run {
+                            self.lastError = "Group column G\(group) C\(column): OSC/REST falliti"
+                        }
+                    }
+                }
+            }
+
+            if okOSC {
                 let via: String
                 switch settings.triggerTarget {
                 case .clip:
@@ -220,10 +271,9 @@ final class SchedulerEngine: ObservableObject {
                 case .column:
                     via = "Col \(triggers[i].column + 1)"
                 case .groupColumn:
-                    let g = (triggers[i].layerGroup ?? 0) + 1
-                    via = "G\(g) Col \(triggers[i].column + 1)"
+                    via = "G\(settings.targetLayerGroup + 1) Col \(triggers[i].column + 1)"
                 }
-                statusMessage = "Trigger \(via) @ \(triggers[i].timeLabel)"
+                statusMessage = "Trigger \(via) @ \(triggers[i].timeLabel) → \(address)"
             } else {
                 lastError = osc.lastError ?? "Invio OSC fallito"
             }

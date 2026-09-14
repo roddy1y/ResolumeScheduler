@@ -58,6 +58,20 @@ struct ContentView: View {
                 )) {
                     ForEach(TriggerTarget.allCases) { Text($0.title).tag($0) }
                 }
+                if engine.settings.triggerTarget == .groupColumn {
+                    labeledPicker("Layer group", selection: Binding(
+                        get: { engine.settings.targetLayerGroup },
+                        set: { engine.settings.targetLayerGroup = $0 }
+                    )) {
+                        if engine.layerGroups.isEmpty {
+                            Text("Group 1").tag(0)
+                        } else {
+                            ForEach(engine.layerGroups) { g in
+                                Text(g.title).tag(g.index)
+                            }
+                        }
+                    }
+                }
                 Spacer()
                 Button("Impostazioni") { engine.showSettings = true }
                 Button("Check") { engine.check() }
@@ -209,10 +223,10 @@ struct ContentView: View {
         case .column:
             return "Colonna \(trigger.column + 1) (da L\(trigger.layer + 1))"
         case .groupColumn:
-            if let g = trigger.layerGroup {
-                return "Gruppo \(g + 1) · Colonna \(trigger.column + 1) (L\(trigger.layer + 1))"
-            }
-            return "Nessun layer group · L\(trigger.layer + 1) C\(trigger.column + 1)"
+            let g = engine.settings.targetLayerGroup + 1
+            let gName = engine.layerGroups.first(where: { $0.index == engine.settings.targetLayerGroup })?.name
+            let prefix = gName.map { "\($0) · " } ?? "Gruppo \(g) · "
+            return "\(prefix)Colonna \(trigger.column + 1)"
         }
     }
 
